@@ -18,7 +18,7 @@ from web_bp_index import index_bp
 def sitemap() -> Response:
     sitemaps = []
     for rule in current_app.url_map.iter_rules():
-        if rule.endpoint and rule.endpoint.startswith("robots.sitemap_"):
+        if rule.endpoint and rule.endpoint.startswith("index.sitemap_"):
             sitemaps.append(Sitemap(rule.endpoint))
     template = render_template("sitemap_index.xml", sitemaps=sitemaps)
     response = make_response(text_to_xml(template))

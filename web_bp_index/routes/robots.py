@@ -11,7 +11,7 @@ def robots() -> Response:
     template = render_template(
         "robots.txt",
         disallow_urls=["/api/*", "/webhook/*", "/user/*", "/admin/*"],
-        sitemap_url=url_for("robots.sitemap", _external=True),
+        sitemap_url=url_for("index.sitemap", _external=True),
     )
     text = os.linesep.join([x for x in template.splitlines() if x])
     response = make_response(text)
