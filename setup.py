@@ -4,8 +4,6 @@ from version import __version__
 
 DATA = [
     "*.md",
-    "static/*.css",
-    "static/*.js",
     "templates/*.txt",
     "templates/*.xml",
 ]
