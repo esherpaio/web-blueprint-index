@@ -1,0 +1,30 @@
+[tool.ruff]
+lint.select = ["F", "E", "W", "I"]
+lint.ignore = ["E501"]
+line-length = 88
+target-version = "py311"
+cache-dir = ".cache/ruff"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+check_untyped_defs=true
+ignore_missing_imports=true
+cache_dir=".cache/mypy"
+
+[tool.djlint]
+profile="jinja"
+quiet=true
+use_gitignore=true
+max_line_length=100
+preserve_blank_lines=true
+
+[tool.pytest.ini_options]
+python_files="test_*.py"
+addopts="--maxfail=1"
+faulthandler_timeout=5
+cache_dir=".cache/pytest"
