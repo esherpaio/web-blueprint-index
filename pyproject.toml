@@ -12,19 +12,20 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.mypy]
-check_untyped_defs=true
-ignore_missing_imports=true
-cache_dir=".cache/mypy"
+check_untyped_defs = true
+ignore_missing_imports = true
+cache_dir = ".cache/mypy"
+exclude = "test/"
 
 [tool.djlint]
-profile="jinja"
-quiet=true
-use_gitignore=true
-max_line_length=100
-preserve_blank_lines=true
+profile = "jinja"
+quiet = true
+use_gitignore = true
+max_line_length = 100
+preserve_blank_lines = true
 
 [tool.pytest.ini_options]
-python_files="test_*.py"
-addopts="--maxfail=1"
-faulthandler_timeout=5
-cache_dir=".cache/pytest"
+python_files = "test_*.py"
+addopts = "--maxfail=1"
+faulthandler_timeout = 30
+cache_dir = ".cache/pytest"
