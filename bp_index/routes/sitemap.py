@@ -11,7 +11,7 @@ from web.database.model import Article, Category, Sku
 from web.locale import gen_locale
 from web.utils.modifiers import text_to_xml
 
-from web_bp_index import index_bp
+from bp_index import index_bp
 
 
 @index_bp.route("/sitemap.xml")

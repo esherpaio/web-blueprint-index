@@ -25,5 +25,5 @@ setup(
     install_requires=find_requirements(),
     include_package_data=True,
     package_data={"": DATA},
-    packages=find_packages(include=["web_bp_index", "web_bp_index.*"]),
+    packages=find_packages(include=["bp_index", "bp_index.*"]),
 )

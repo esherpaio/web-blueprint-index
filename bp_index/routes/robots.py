@@ -3,7 +3,7 @@ import os
 from flask import Response, make_response, render_template
 from web.app.urls import url_for
 
-from web_bp_index import index_bp
+from bp_index import index_bp
 
 
 @index_bp.route("/robots.txt")
