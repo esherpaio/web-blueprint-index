@@ -1,0 +1,52 @@
+name: Workflow
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - name: Install dependencies
+        run: make packages
+      - name: Run linters
+        run: make lint
+
+  backup:
+    runs-on: ubuntu-latest
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Bypass triggers
+        run: |
+          echo "set man-db/auto-update false" | sudo debconf-communicate
+          sudo dpkg-reconfigure man-db
+      - name: Create bundle
+        run: |
+          TIMESTAMP=$(date +%Y%m%d)
+          mkdir -p bundles
+          git bundle create "bundles/${TIMESTAMP}_${{ github.event.repository.name }}.bundle" --all
+      - name: Upload via lftp
+        run: |
+          sudo apt-get update && sudo apt-get install -y lftp
+          for f in bundles/*; do
+            [ -f "$f" ] || { echo "No bundle files found"; exit 1; }
+            base=$(basename "$f")
+            echo "Uploading $f -> /backups/$base"
+            lftp -u "${{ secrets.FTP_USERNAME }},${{ secrets.FTP_PASSWORD }}" ftp://${{ secrets.FTP_HOSTNAME }}:21 -e "set ftp:passive-mode true; set ftp:ssl-allow true; set ftp:ssl-force false; set ftp:ssl-auth TLS; set net:max-retries 2; set net:persist-retries 0; set net:timeout 20; set cmd:trace true; cd backups; put $f -o $base; bye"
+          done
