@@ -1,3 +1,7 @@
+.PHONY: commit
+commit:
+	git rev-parse --short HEAD
+
 .PHONY: venv packages
 venv:
 	python3.12 -m venv .venv
