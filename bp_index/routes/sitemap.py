@@ -1,7 +1,7 @@
 import itertools
 from typing import Type
 
-from flask import Response, current_app, make_response, render_template
+from flask import Response, abort, make_response, render_template
 from sqlalchemy.orm import joinedload
 from web.app.routing import has_argument, is_endpoint
 from web.cache import cache
@@ -17,10 +17,20 @@ from bp_index._utils import get_latest_date
 
 @index_bp.route("/sitemap.xml")
 def sitemap() -> Response:
+    sitemap_generators = {
+        "index.sitemap_pages": _get_route_sitemap_urls,
+        "index.sitemap_products": lambda: _get_related_route_sitemap_urls(Sku),
+        "index.sitemap_articles": lambda: _get_related_route_sitemap_urls(Article),
+        "index.sitemap_categories": lambda: _get_related_route_sitemap_urls(Category),
+    }
+
     sitemaps = []
-    for rule in current_app.url_map.iter_rules():
-        if rule.endpoint and rule.endpoint.startswith("index.sitemap_"):
-            sitemaps.append(Sitemap(rule.endpoint))
+    for endpoint, generator in sitemap_generators.items():
+        if generator():
+            sitemaps.append(Sitemap(endpoint))
+    if not sitemaps:
+        abort(404)
+
     template = render_template("sitemap_index.xml", sitemaps=sitemaps)
     response = make_response(text_to_xml(template))
     response.headers["Content-Type"] = "application/xml"
@@ -29,6 +39,37 @@ def sitemap() -> Response:
 
 @index_bp.route("/sitemap-pages.xml")
 def sitemap_pages() -> Response:
+    urls = _get_route_sitemap_urls()
+    if not urls:
+        abort(404)
+    return _generate_sitemap(urls)
+
+
+@index_bp.route("/sitemap-products.xml")
+def sitemap_products() -> Response:
+    urls = _get_related_route_sitemap_urls(Sku)
+    if not urls:
+        abort(404)
+    return _generate_sitemap(urls)
+
+
+@index_bp.route("/sitemap-articles.xml")
+def sitemap_articles() -> Response:
+    urls = _get_related_route_sitemap_urls(Article)
+    if not urls:
+        abort(404)
+    return _generate_sitemap(urls)
+
+
+@index_bp.route("/sitemap-categories.xml")
+def sitemap_categories() -> Response:
+    urls = _get_related_route_sitemap_urls(Category)
+    if not urls:
+        abort(404)
+    return _generate_sitemap(urls)
+
+
+def _get_route_sitemap_urls() -> list[SitemapUrl]:
     iter_args = (
         [x for x in cache.countries if x.in_sitemap],
         [x for x in cache.languages if x.in_sitemap],
@@ -60,29 +101,12 @@ def sitemap_pages() -> Response:
                     updated_at=updated_at,
                 )
             )
-
-    template = render_template("sitemap.xml", urls=urls)
-    response = make_response(text_to_xml(template))
-    response.headers["Content-Type"] = "application/xml"
-    return response
+    return urls
 
 
-@index_bp.route("/sitemap-products.xml")
-def sitemap_products() -> Response:
-    return _generate_sitemap(Sku)
-
-
-@index_bp.route("/sitemap-articles.xml")
-def sitemap_articles() -> Response:
-    return _generate_sitemap(Article)
-
-
-@index_bp.route("/sitemap-categories.xml")
-def sitemap_categories() -> Response:
-    return _generate_sitemap(Category)
-
-
-def _generate_sitemap(model: Type[Sku | Article | Category]) -> Response:
+def _get_related_route_sitemap_urls(
+    model: Type[Sku | Article | Category],
+) -> list[SitemapUrl]:
     with conn.begin() as s:
         objs = (
             s.query(model)
@@ -131,7 +155,10 @@ def _generate_sitemap(model: Type[Sku | Article | Category]) -> Response:
                     updated_at=updated_at,
                 )
             )
+    return urls
 
+
+def _generate_sitemap(urls: list[SitemapUrl]) -> Response:
     template = render_template("sitemap.xml", urls=urls)
     response = make_response(text_to_xml(template))
     response.headers["Content-Type"] = "application/xml"
