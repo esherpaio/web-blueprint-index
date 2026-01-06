@@ -26,8 +26,10 @@ def sitemap() -> Response:
 
     sitemaps = []
     for endpoint, generator in sitemap_generators.items():
-        if generator():
-            sitemaps.append(Sitemap(endpoint))
+        urls = generator()
+        if urls:
+            updated_at = get_latest_date(*(url._updated_at for url in urls))
+            sitemaps.append(Sitemap(endpoint, updated_at))
     if not sitemaps:
         abort(404)
 
