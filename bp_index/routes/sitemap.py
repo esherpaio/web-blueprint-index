@@ -89,7 +89,11 @@ def _get_route_sitemap_urls() -> list[SitemapUrl]:
             ]
         else:
             locale_args = [{}]
-        if route.is_collection:
+        if (
+            route.is_collection
+            and route.sitemap_query_key
+            and route.sitemap_query_values
+        ):
             query_args = [
                 {route.sitemap_query_key: v} for v in route.sitemap_query_values
             ]
