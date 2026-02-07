@@ -81,6 +81,10 @@ def _get_route_sitemap_urls() -> list[SitemapUrl]:
     for route in cache.routes:
         if not route.in_sitemap or not is_endpoint(route.endpoint):
             continue
+        if route.is_collection and (
+            not route.sitemap_query_key or not route.sitemap_query_values
+        ):
+            continue
         updated_at = get_latest_date(route.updated_at, route.created_at)
         if has_argument(route.endpoint, "_locale"):
             locale_args = [
