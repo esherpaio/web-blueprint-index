@@ -79,30 +79,25 @@ def _get_route_sitemap_urls() -> list[SitemapUrl]:
 
     urls = []
     for route in cache.routes:
-        if (
-            route.is_collection
-            or not route.in_sitemap
-            or not is_endpoint(route.endpoint)
-        ):
+        if not route.in_sitemap or not is_endpoint(route.endpoint):
             continue
         updated_at = get_latest_date(route.updated_at, route.created_at)
         if has_argument(route.endpoint, "_locale"):
-            for country, language in itertools.product(*iter_args):
-                locale = gen_locale(language.code, country.code)
-                urls.append(
-                    SitemapUrl(
-                        route.endpoint,
-                        _locale=locale,
-                        updated_at=updated_at,
-                    )
-                )
+            locale_args = [
+                {"_locale": gen_locale(lang.code, country.code)}
+                for country, lang in itertools.product(*iter_args)
+            ]
         else:
-            urls.append(
-                SitemapUrl(
-                    route.endpoint,
-                    updated_at=updated_at,
-                )
-            )
+            locale_args = [{}]
+        if route.is_collection:
+            query_args = [
+                {route.sitemap_query_key: v} for v in route.sitemap_query_values
+            ]
+        else:
+            query_args = [{}]
+        for la, qa in itertools.product(locale_args, query_args):
+            urls.append(SitemapUrl(route.endpoint, updated_at=updated_at, **la, **qa))
+
     return urls
 
 
@@ -139,23 +134,15 @@ def _get_related_route_sitemap_urls(
             obj.route.created_at,
         )
         if has_argument(endpoint, "_locale"):
-            for country, language in itertools.product(*iter_args):
-                locale = gen_locale(language.code, country.code)
-                urls.append(
-                    SitemapUrl(
-                        endpoint,
-                        _locale=locale,
-                        slug=obj.slug,
-                        updated_at=updated_at,
-                    )
-                )
+            locale_args = [
+                {"_locale": gen_locale(lang.code, country.code)}
+                for country, lang in itertools.product(*iter_args)
+            ]
         else:
+            locale_args = [{}]
+        for la in locale_args:
             urls.append(
-                SitemapUrl(
-                    endpoint,
-                    slug=obj.slug,
-                    updated_at=updated_at,
-                )
+                SitemapUrl(endpoint, slug=obj.slug, updated_at=updated_at, **la)
             )
     return urls
 
