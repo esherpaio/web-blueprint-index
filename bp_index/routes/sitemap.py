@@ -1,4 +1,6 @@
 import itertools
+from datetime import datetime, timezone
+from typing import Optional
 
 from flask import Response, abort, make_response, render_template
 from web.app.routing import has_argument, is_endpoint
@@ -7,8 +9,11 @@ from web.locale import gen_locale
 from web.utils.modifiers import text_to_xml
 
 from bp_index import index_bp
-from bp_index._models import Sitemap, SitemapUrl
-from bp_index._utils import get_latest_date
+from bp_index.models import Sitemap, SitemapUrl
+
+
+def get_latest_date(*dates: Optional[datetime]) -> datetime:
+    return max(filter(None, dates), default=datetime.now(timezone.utc))
 
 
 @index_bp.route("/sitemap.xml")

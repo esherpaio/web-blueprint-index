@@ -1,4 +1,4 @@
-from ._bp import index_bp
+from .blueprint import index_bp
 from .routes import robots, sitemap
 
 __all__ = [
