@@ -1,9 +1,7 @@
 import itertools
-from collections.abc import Collection
-from datetime import datetime
 
 from flask import Response, abort, current_app, make_response, render_template
-from sqlalchemy import func, true
+from sqlalchemy import true
 from sqlalchemy.orm import joinedload, selectinload
 from web.app.urls import url_for
 from web.cache import cache
@@ -13,7 +11,20 @@ from web.locale import gen_locale
 from web.utils.modifiers import text_to_xml
 
 from bp_index import index_bp
-from bp_index.models import Sitemap, SitemapAlternate, SitemapEntry
+from bp_index.models import (
+    Sitemap,
+    SitemapAlternate,
+    SitemapChunk,
+    SitemapEntry,
+    SitemapEntryBundle,
+)
+
+SITEMAP_TARGET_URLS = 40_000
+SITEMAP_TARGET_BYTES = 40 * 1024 * 1024
+SITEMAP_MAX_URLS = 50_000
+SITEMAP_MAX_BYTES = 50 * 1024 * 1024
+
+LocaleVariant = tuple[dict[str, str], str]
 
 #
 # Routes
@@ -23,69 +34,102 @@ from bp_index.models import Sitemap, SitemapAlternate, SitemapEntry
 @index_bp.route("/sitemap.xml")
 def sitemap() -> Response:
     locale_variants = _get_locale_variants()
-    excluded_endpoints = _get_localized_endpoints() if not locale_variants else set()
-    sitemaps: list[Sitemap] = [
-        Sitemap(
-            loc=url_for("index.sitemap_group", group=group, _external=True),
-            lastmod=lastmod.strftime("%Y-%m-%d"),
-        )
-        for group, lastmod in _get_sitemap_group_lastmods(
-            excluded_endpoints=excluded_endpoints
-        )
-    ]
+    localized_endpoints = _get_localized_endpoints()
+    sitemaps: list[Sitemap] = []
 
-    sitemaps.extend(
-        Sitemap(
-            loc=url_for("index.sitemap_group_images", group=group, _external=True),
-            lastmod=lastmod.strftime("%Y-%m-%d"),
+    # Sitemap groups with standard URLs
+    for group in _get_sitemap_groups():
+        chunks = _get_sitemap_chunks(
+            group,
+            locale_variants=locale_variants,
+            localized_endpoints=localized_endpoints,
         )
-        for group, lastmod in _get_sitemap_group_lastmods(image_only=True)
-    )
+        sitemaps.extend(
+            Sitemap(
+                loc=url_for(
+                    "index.sitemap_group",
+                    group=group,
+                    part=part,
+                    _external=True,
+                ),
+                lastmod=chunk.lastmod.strftime("%Y-%m-%d"),
+            )
+            for part, chunk in enumerate(chunks, start=1)
+        )
+
+    # Sitemap groups with image-only URLs
+    for group in _get_sitemap_groups(image_only=True):
+        chunks = _get_sitemap_chunks(
+            group,
+            image_only=True,
+            locale_variants=locale_variants,
+            localized_endpoints=localized_endpoints,
+        )
+        sitemaps.extend(
+            Sitemap(
+                loc=url_for(
+                    "index.sitemap_group_images",
+                    group=group,
+                    part=part,
+                    _external=True,
+                ),
+                lastmod=chunk.lastmod.strftime("%Y-%m-%d"),
+            )
+            for part, chunk in enumerate(chunks, start=1)
+        )
 
     if not sitemaps:
         abort(404)
     template = render_template("sitemap_index.xml", sitemaps=sitemaps)
-    response = make_response(text_to_xml(template))
-    response.headers["Content-Type"] = "application/xml"
-    return response
+    return _xml_response(text_to_xml(template))
 
 
-@index_bp.route("/sitemap-<string:group>.xml")
-def sitemap_group(group: str) -> Response:
-    entries = _get_sitemap_entries(group)
-    if not entries:
-        abort(404)
-    return _generate_sitemap(entries)
+@index_bp.route("/sitemap-<string:group>.xml", defaults={"part": None})
+@index_bp.route("/sitemap-<string:group>-<int:part>.xml")
+def sitemap_group(group: str, part: int | None) -> Response:
+    if part is None:
+        url = url_for("index.sitemap_group", group=group, part=1)
+        return make_response("", 301, {"Location": url})
+    return _get_sitemap_part(group, part)
 
 
-@index_bp.route("/sitemap-<string:group>-images.xml")
-def sitemap_group_images(group: str) -> Response:
-    entries = _get_sitemap_entries(group, image_only=True)
-    if not entries:
-        abort(404)
-    return _generate_sitemap(entries)
+@index_bp.route("/sitemap-<string:group>-images.xml", defaults={"part": None})
+@index_bp.route("/sitemap-<string:group>-images-<int:part>.xml")
+def sitemap_group_images(group: str, part: int | None) -> Response:
+    if part is None:
+        url = url_for("index.sitemap_group_images", group=group, part=1)
+        return make_response("", 301, {"Location": url})
+    return _get_sitemap_part(group, part, image_only=True)
 
 
-def _generate_sitemap(entries: list[SitemapEntry]) -> Response:
-    template = render_template("sitemap.xml", entries=entries)
-    response = make_response(text_to_xml(template))
-    response.headers["Content-Type"] = "application/xml"
-    return response
-
-
-#
-# Helpers
-#
-
-
-def _get_sitemap_group_lastmods(
-    *,
+def _get_sitemap_part(
+    group: str,
+    part: int,
     image_only: bool = False,
-    excluded_endpoints: Collection[str] = (),
-) -> list[tuple[str, datetime]]:
+) -> Response:
+    if part < 1:
+        abort(404)
+    chunks = _get_sitemap_chunks(group, image_only=image_only)
+    if part > len(chunks):
+        abort(404)
+    return _xml_response(chunks[part - 1].xml)
+
+
+def _xml_response(xml: bytes) -> Response:
+    response = make_response(xml)
+    response.headers["Content-Type"] = "application/xml"
+    return response
+
+
+#
+# Queries
+#
+
+
+def _get_sitemap_groups(image_only: bool = False) -> list[str]:
     with conn.begin() as s:
         query = (
-            s.query(AppRoute.sitemap_group, func.max(SitemapLocation.lastmod))
+            s.query(AppRoute.sitemap_group)
             .select_from(SitemapLocation)
             .join(SitemapLocation.route)
             .filter(AppRoute.in_sitemap == true())
@@ -95,14 +139,8 @@ def _get_sitemap_group_lastmods(
                 AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
                 SitemapLocation.images.any(),
             )
-        if excluded_endpoints:
-            query = query.filter(AppRoute.endpoint.notin_(excluded_endpoints))
-        rows = (
-            query.group_by(AppRoute.sitemap_group)
-            .order_by(AppRoute.sitemap_group)
-            .all()
-        )
-    return [(group, lastmod) for group, lastmod in rows]
+        rows = query.distinct().order_by(AppRoute.sitemap_group).all()
+    return [group for (group,) in rows]
 
 
 def _get_sitemap_locations(
@@ -130,18 +168,30 @@ def _get_sitemap_locations(
         return query.order_by(SitemapLocation.route_id, SitemapLocation.id).all()
 
 
-def _get_sitemap_entries(
+#
+# Entries
+#
+
+
+def _get_sitemap_entry_bundles(
     group: str,
     image_only: bool = False,
-) -> list[SitemapEntry]:
+    locale_variants: tuple[LocaleVariant, ...] | None = None,
+    localized_endpoints: set[str] | None = None,
+) -> list[SitemapEntryBundle]:
     sitemap_locations = _get_sitemap_locations(group, image_only=image_only)
-    locale_variants = tuple() if image_only else _get_locale_variants()
-    localized_endpoints = _get_localized_endpoints()
+    if locale_variants is None:
+        locale_variants = tuple() if image_only else _get_locale_variants()
+    elif image_only:
+        locale_variants = tuple()
+    if localized_endpoints is None:
+        localized_endpoints = _get_localized_endpoints()
 
-    entries: list[SitemapEntry] = []
+    bundles: list[SitemapEntryBundle] = []
     for sitemap_location in sitemap_locations:
         route = sitemap_location.route
         is_localized = route.endpoint in localized_endpoints
+
         endpoint_arg_variants: tuple[dict[str, str], ...]
         if is_localized:
             if image_only:
@@ -169,24 +219,27 @@ def _get_sitemap_entries(
             else tuple()
         )
         lastmod = sitemap_location.lastmod.strftime("%Y-%m-%d")
-        for endpoint_arg_variant in endpoint_arg_variants:
-            endpoint_args = sitemap_location.endpoint_args | endpoint_arg_variant
-            loc = url_for(route.endpoint, **endpoint_args, _external=True)
-            entries.append(
-                SitemapEntry(
-                    loc=loc,
-                    lastmod=lastmod,
-                    alternates=alternates,
-                    image_locs=image_locs,
-                )
+        entries = tuple(
+            SitemapEntry(
+                loc=url_for(
+                    route.endpoint,
+                    **(sitemap_location.endpoint_args | endpoint_arg_variant),
+                    _external=True,
+                ),
+                lastmod=lastmod,
+                alternates=alternates,
+                image_locs=image_locs,
             )
+            for endpoint_arg_variant in endpoint_arg_variants
+        )
+        bundles.append(SitemapEntryBundle(entries, sitemap_location.lastmod))
 
-    return entries
+    return bundles
 
 
 def _get_sitemap_alternates(
     sitemap_location: SitemapLocation,
-    locale_variants: tuple[tuple[dict[str, str], str], ...],
+    locale_variants: tuple[LocaleVariant, ...],
 ) -> tuple[SitemapAlternate, ...]:
     route = sitemap_location.route
     alternates = [
@@ -206,7 +259,7 @@ def _get_sitemap_alternates(
     return tuple(alternates)
 
 
-def _get_locale_variants() -> tuple[tuple[dict[str, str], str], ...]:
+def _get_locale_variants() -> tuple[LocaleVariant, ...]:
     countries = (country for country in cache.countries if country.in_sitemap)
     languages = (language for language in cache.languages if language.in_sitemap)
     return tuple(
@@ -224,3 +277,112 @@ def _get_localized_endpoints() -> set[str]:
         for rule in current_app.url_map.iter_rules()
         if "_locale" in rule.arguments
     }
+
+
+#
+# Partitioning
+#
+
+
+def _get_sitemap_chunks(
+    group: str,
+    image_only: bool = False,
+    locale_variants: tuple[LocaleVariant, ...] | None = None,
+    localized_endpoints: set[str] | None = None,
+) -> list[SitemapChunk]:
+    bundles = _get_sitemap_entry_bundles(
+        group,
+        image_only=image_only,
+        locale_variants=locale_variants,
+        localized_endpoints=localized_endpoints,
+    )
+    return _partition_sitemap_bundles(bundles)
+
+
+def _partition_sitemap_bundles(
+    bundles: list[SitemapEntryBundle],
+) -> list[SitemapChunk]:
+    chunks: list[SitemapChunk] = []
+    start = 0
+    while start < len(bundles):
+        end = _get_count_limited_end(bundles, start)
+        chunk = _build_sitemap_chunk(bundles[start:end])
+
+        if len(chunk.xml) > SITEMAP_TARGET_BYTES and end - start > 1:
+            end, chunk = _find_largest_fitting_chunk(bundles, start, end)
+
+        _validate_sitemap_chunk(chunk)
+        chunks.append(chunk)
+        start = end
+
+    return chunks
+
+
+def _get_count_limited_end(
+    bundles: list[SitemapEntryBundle],
+    start: int,
+) -> int:
+    url_count = 0
+    end = start
+    while end < len(bundles):
+        bundle_url_count = len(bundles[end].entries)
+        if end > start and url_count + bundle_url_count > SITEMAP_TARGET_URLS:
+            break
+        url_count += bundle_url_count
+        end += 1
+        if url_count >= SITEMAP_TARGET_URLS:
+            break
+    return end
+
+
+def _find_largest_fitting_chunk(
+    bundles: list[SitemapEntryBundle],
+    start: int,
+    end: int,
+) -> tuple[int, SitemapChunk]:
+    # The full count-limited candidate is too large. Rendering prefixes with a
+    # binary search avoids repeatedly rendering the sitemap after every bundle.
+    best_end: int | None = None
+    best_chunk: SitemapChunk | None = None
+    low = start + 1
+    high = end - 1
+
+    while low <= high:
+        candidate_end = (low + high) // 2
+        candidate = _build_sitemap_chunk(bundles[start:candidate_end])
+        if (
+            candidate.url_count <= SITEMAP_TARGET_URLS
+            and len(candidate.xml) <= SITEMAP_TARGET_BYTES
+        ):
+            best_end = candidate_end
+            best_chunk = candidate
+            low = candidate_end + 1
+        else:
+            high = candidate_end - 1
+
+    if best_end is not None and best_chunk is not None:
+        return best_end, best_chunk
+
+    single_bundle_end = start + 1
+    return single_bundle_end, _build_sitemap_chunk(bundles[start:single_bundle_end])
+
+
+def _build_sitemap_chunk(bundles: list[SitemapEntryBundle]) -> SitemapChunk:
+    entries = tuple(itertools.chain.from_iterable(bundle.entries for bundle in bundles))
+    template = render_template("sitemap.xml", entries=entries)
+    xml = text_to_xml(template)
+    lastmod = max(bundle.lastmod for bundle in bundles)
+    return SitemapChunk(xml=xml, lastmod=lastmod, url_count=len(entries))
+
+
+def _validate_sitemap_chunk(chunk: SitemapChunk) -> None:
+    if chunk.url_count > SITEMAP_MAX_URLS:
+        raise ValueError(
+            f"Sitemap chunk contains {chunk.url_count} URLs; "
+            f"the maximum is {SITEMAP_MAX_URLS}"
+        )
+    if len(chunk.xml) > SITEMAP_MAX_BYTES:
+        raise ValueError(
+            f"Sitemap chunk is {len(chunk.xml)} bytes; "
+            f"the maximum is {SITEMAP_MAX_BYTES} bytes"
+        )

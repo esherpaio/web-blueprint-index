@@ -1,4 +1,18 @@
 from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass(frozen=True)
+class Sitemap:
+    loc: str
+    lastmod: str
+
+
+@dataclass(frozen=True)
+class SitemapChunk:
+    xml: bytes
+    lastmod: datetime
+    url_count: int
 
 
 @dataclass(frozen=True)
@@ -16,6 +30,6 @@ class SitemapEntry:
 
 
 @dataclass(frozen=True)
-class Sitemap:
-    loc: str
-    lastmod: str
+class SitemapEntryBundle:
+    entries: tuple[SitemapEntry, ...]
+    lastmod: datetime
