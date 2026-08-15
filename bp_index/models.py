@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from web.database.model import SitemapLocation
-
 
 @dataclass(frozen=True)
 class SitemapAlternate:
@@ -11,8 +9,8 @@ class SitemapAlternate:
 
 @dataclass(frozen=True)
 class SitemapEntry:
-    location: SitemapLocation
     loc: str
+    lastmod: str
     alternates: tuple[SitemapAlternate, ...] = ()
     image_locs: tuple[str, ...] = ()
 

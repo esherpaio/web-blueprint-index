@@ -1,17 +1,15 @@
 import itertools
+from collections.abc import Collection
 from datetime import datetime
 
-from flask import Response, abort, make_response, render_template
-from sqlalchemy import true
-from sqlalchemy.orm import joinedload
-from web import cdn
-from web.app.routing import has_argument
+from flask import Response, abort, current_app, make_response, render_template
+from sqlalchemy import func, true
+from sqlalchemy.orm import joinedload, selectinload
 from web.app.urls import url_for
 from web.cache import cache
 from web.database import conn
 from web.database.model import AppRoute, SitemapImageMode, SitemapLocation
 from web.locale import gen_locale
-from web.setup import config
 from web.utils.modifiers import text_to_xml
 
 from bp_index import index_bp
@@ -24,37 +22,24 @@ from bp_index.models import Sitemap, SitemapAlternate, SitemapEntry
 
 @index_bp.route("/sitemap.xml")
 def sitemap() -> Response:
-    group_lastmods: dict[str, datetime] = {}
-    for location in _get_sitemap_locations():
-        group = location.route.sitemap_group
-        group_lastmods[group] = max(
-            group_lastmods.get(group, location.lastmod),
-            location.lastmod,
-        )
+    locale_variants = _get_locale_variants()
+    excluded_endpoints = _get_localized_endpoints() if not locale_variants else set()
     sitemaps: list[Sitemap] = [
         Sitemap(
             loc=url_for("index.sitemap_group", group=group, _external=True),
             lastmod=lastmod.strftime("%Y-%m-%d"),
         )
-        for group, lastmod in sorted(group_lastmods.items())
+        for group, lastmod in _get_sitemap_group_lastmods(
+            excluded_endpoints=excluded_endpoints
+        )
     ]
 
-    image_group_lastmods: dict[str, datetime] = {}
-    for location in _get_sitemap_locations(
-        image_mode=SitemapImageMode.SEPARATE,
-        require_images=True,
-    ):
-        group = location.route.sitemap_group
-        image_group_lastmods[group] = max(
-            image_group_lastmods.get(group, location.lastmod),
-            location.lastmod,
-        )
     sitemaps.extend(
         Sitemap(
             loc=url_for("index.sitemap_group_images", group=group, _external=True),
             lastmod=lastmod.strftime("%Y-%m-%d"),
         )
-        for group, lastmod in sorted(image_group_lastmods.items())
+        for group, lastmod in _get_sitemap_group_lastmods(image_only=True)
     )
 
     if not sitemaps:
@@ -93,70 +78,82 @@ def _generate_sitemap(entries: list[SitemapEntry]) -> Response:
 #
 
 
+def _get_sitemap_group_lastmods(
+    *,
+    image_only: bool = False,
+    excluded_endpoints: Collection[str] = (),
+) -> list[tuple[str, datetime]]:
+    with conn.begin() as s:
+        query = (
+            s.query(AppRoute.sitemap_group, func.max(SitemapLocation.lastmod))
+            .select_from(SitemapLocation)
+            .join(SitemapLocation.route)
+            .filter(AppRoute.in_sitemap == true())
+        )
+        if image_only:
+            query = query.filter(
+                AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
+                SitemapLocation.images.any(),
+            )
+        if excluded_endpoints:
+            query = query.filter(AppRoute.endpoint.notin_(excluded_endpoints))
+        rows = (
+            query.group_by(AppRoute.sitemap_group)
+            .order_by(AppRoute.sitemap_group)
+            .all()
+        )
+    return [(group, lastmod) for group, lastmod in rows]
+
+
 def _get_sitemap_locations(
-    group: str | None = None,
-    image_mode: SitemapImageMode | None = None,
-    require_images: bool = False,
+    group: str,
+    image_only: bool = False,
 ) -> list[SitemapLocation]:
     with conn.begin() as s:
         query = (
             s.query(SitemapLocation)
             .join(SitemapLocation.route)
             .options(
-                joinedload(SitemapLocation.images),
                 joinedload(SitemapLocation.route),
+                selectinload(SitemapLocation.images),
             )
-            .filter(AppRoute.in_sitemap == true())
+            .filter(
+                AppRoute.in_sitemap == true(),
+                AppRoute.sitemap_group == group,
+            )
         )
-        if group is not None:
-            query = query.filter(AppRoute.sitemap_group == group)
-        if image_mode is not None:
-            query = query.filter(AppRoute.sitemap_image_mode == image_mode)
-        if require_images:
-            query = query.filter(SitemapLocation.images.any())
-        sitemap_locations = query.order_by(
-            AppRoute.sitemap_group,
-            SitemapLocation.route_id,
-            SitemapLocation.id,
-        ).all()
-    return [location for location in sitemap_locations]
+        if image_only:
+            query = query.filter(
+                AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
+                SitemapLocation.images.any(),
+            )
+        return query.order_by(SitemapLocation.route_id, SitemapLocation.id).all()
 
 
 def _get_sitemap_entries(
     group: str,
     image_only: bool = False,
 ) -> list[SitemapEntry]:
-    image_mode = SitemapImageMode.SEPARATE if image_only else None
-    sitemap_locations = _get_sitemap_locations(
-        group,
-        image_mode=image_mode,
-        require_images=image_only,
-    )
-    locale_iter_args = (
-        [x for x in cache.countries if x.in_sitemap],
-        [x for x in cache.languages if x.in_sitemap],
-    )
+    sitemap_locations = _get_sitemap_locations(group, image_only=image_only)
+    locale_variants = tuple() if image_only else _get_locale_variants()
+    localized_endpoints = _get_localized_endpoints()
 
-    entries = []
+    entries: list[SitemapEntry] = []
     for sitemap_location in sitemap_locations:
         route = sitemap_location.route
-        locale_variants: list[tuple[dict[str, str], str | None]]
-        is_localized = has_argument(route.endpoint, "_locale")
+        is_localized = route.endpoint in localized_endpoints
+        endpoint_arg_variants: tuple[dict[str, str], ...]
         if is_localized:
-            locale_variants = [
-                (
-                    {"_locale": gen_locale(lang.code, country.code)},
-                    f"{lang.code.lower()}-{country.code.upper()}",
-                )
-                for country, lang in itertools.product(*locale_iter_args)
-            ]
             if image_only:
-                default_locale = f"{config.LOCALE_LANGUAGE_CODE}-{config.LOCALE_COUNTRY_CODE.upper()}"
-                locale_variants = [({"_locale": gen_locale()}, (default_locale))]
-            if not locale_variants:
+                endpoint_arg_variants = ({"_locale": gen_locale()},)
+            elif locale_variants:
+                endpoint_arg_variants = tuple(
+                    endpoint_args for endpoint_args, _ in locale_variants
+                )
+            else:
                 continue
         else:
-            locale_variants = [({}, None)]
+            endpoint_arg_variants = ({},)
 
         alternates = (
             _get_sitemap_alternates(sitemap_location, locale_variants)
@@ -167,17 +164,18 @@ def _get_sitemap_entries(
             image_only or route.sitemap_image_mode == SitemapImageMode.COMBINED
         )
         image_locs = (
-            tuple(cdn.url(image.loc) for image in sitemap_location.images)
+            tuple(image.loc for image in sitemap_location.images)
             if include_images
             else tuple()
         )
-        for locale_args_, _ in locale_variants:
-            endpoint_args = sitemap_location.endpoint_args | locale_args_
+        lastmod = sitemap_location.lastmod.strftime("%Y-%m-%d")
+        for endpoint_arg_variant in endpoint_arg_variants:
+            endpoint_args = sitemap_location.endpoint_args | endpoint_arg_variant
             loc = url_for(route.endpoint, **endpoint_args, _external=True)
             entries.append(
                 SitemapEntry(
-                    location=sitemap_location,
                     loc=loc,
+                    lastmod=lastmod,
                     alternates=alternates,
                     image_locs=image_locs,
                 )
@@ -188,7 +186,7 @@ def _get_sitemap_entries(
 
 def _get_sitemap_alternates(
     sitemap_location: SitemapLocation,
-    locale_variants: list[tuple[dict[str, str], str | None]],
+    locale_variants: tuple[tuple[dict[str, str], str], ...],
 ) -> tuple[SitemapAlternate, ...]:
     route = sitemap_location.route
     alternates = [
@@ -201,13 +199,28 @@ def _get_sitemap_alternates(
             ),
         )
         for locale_args, hreflang in locale_variants
-        if hreflang is not None
     ]
     default_args = sitemap_location.endpoint_args | {"_locale": gen_locale()}
-    alternates.append(
-        SitemapAlternate(
-            "x-default",
-            url_for(route.endpoint, **default_args, _external=True),
-        )
-    )
+    url = url_for(route.endpoint, **default_args, _external=True)
+    alternates.append(SitemapAlternate("x-default", url))
     return tuple(alternates)
+
+
+def _get_locale_variants() -> tuple[tuple[dict[str, str], str], ...]:
+    countries = (country for country in cache.countries if country.in_sitemap)
+    languages = (language for language in cache.languages if language.in_sitemap)
+    return tuple(
+        (
+            {"_locale": gen_locale(language.code, country.code)},
+            f"{language.code.lower()}-{country.code.upper()}",
+        )
+        for country, language in itertools.product(countries, languages)
+    )
+
+
+def _get_localized_endpoints() -> set[str]:
+    return {
+        rule.endpoint
+        for rule in current_app.url_map.iter_rules()
+        if "_locale" in rule.arguments
+    }

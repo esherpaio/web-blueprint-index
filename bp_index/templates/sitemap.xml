@@ -7,7 +7,7 @@
     {% for entry in entries %}
         <url>
             <loc>{{ entry.loc }}</loc>
-            <lastmod>{{ entry.location.lastmod.strftime("%Y-%m-%d") }}</lastmod>
+            <lastmod>{{ entry.lastmod }}</lastmod>
             {% for alternate in entry.alternates %}
                 <xhtml:link rel="alternate"
                             hreflang="{{ alternate.hreflang }}"
