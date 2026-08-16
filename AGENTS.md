@@ -1,4 +1,4 @@
-# GitHub Copilot Instructions
+# Agent Instructions
 
 ## What NOT to do automatically
 

@@ -1,3 +1,4 @@
+alembic~=1.18.5
 setuptools~=83.0.0
 pytest~=9.1.1
 djlint~=1.42.3

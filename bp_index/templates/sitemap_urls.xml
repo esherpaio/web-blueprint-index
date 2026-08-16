@@ -1,0 +1,16 @@
+{% for entry in entries %}
+    <url>
+        <loc>{{ entry.loc }}</loc>
+        <lastmod>{{ entry.lastmod }}</lastmod>
+        {% for alternate in entry.alternates %}
+            <xhtml:link rel="alternate"
+                        hreflang="{{ alternate.hreflang }}"
+                        href="{{ alternate.href }}" />
+        {% endfor %}
+        {% for image_loc in entry.image_locs %}
+            <image:image>
+                <image:loc>{{ image_loc }}</image:loc>
+            </image:image>
+        {% endfor %}
+    </url>
+{% endfor %}
