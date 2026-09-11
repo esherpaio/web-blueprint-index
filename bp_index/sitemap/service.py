@@ -57,12 +57,7 @@ class SitemapService:
                 for part, _ in enumerate(self._iter_parts(group, kind), start=1):
                     sitemaps.append(
                         SitemapIndexEntry(
-                            url_for(
-                                endpoint,
-                                group=group,
-                                part=part,
-                                _external=True,
-                            )
+                            url_for(endpoint, group=group, part=part, _external=True)
                         )
                     )
 
@@ -258,11 +253,7 @@ class SitemapService:
         return tuple(
             (
                 {"_locale": gen_locale(language_code, country_code)},
-                gen_locale(
-                    language_code,
-                    country_code,
-                    style=LocaleStyle.BCP47,
-                ),
+                gen_locale(language_code, country_code, style=LocaleStyle.BCP47),
             )
             for (country_code,), (language_code,) in itertools.product(
                 country_codes,
