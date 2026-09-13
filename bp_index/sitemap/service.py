@@ -1,10 +1,9 @@
 import itertools
 from collections import defaultdict
-from collections.abc import Iterator
 
 from flask import current_app
 from sqlalchemy import true
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from web.app.urls import url_for
 from web.database import conn
 from web.database.model import (
@@ -19,10 +18,8 @@ from web.locale import LocaleStyle, gen_locale
 
 from .models import (
     SitemapAlternate,
-    SitemapIndexEntry,
     SitemapKind,
     SitemapLimits,
-    SitemapLocationBundle,
     SitemapPart,
     SitemapUrl,
 )
@@ -37,6 +34,11 @@ from .renderer import (
 
 LocaleVariant = tuple[dict[str, str], str]
 
+_GROUP_ENDPOINTS = {
+    SitemapKind.PAGES: "index.sitemap_group",
+    SitemapKind.IMAGES: "index.sitemap_group_images",
+}
+
 
 class SitemapService:
     def __init__(self, limits: SitemapLimits | None = None) -> None:
@@ -44,27 +46,19 @@ class SitemapService:
         self._locale_variants = self._get_locale_variants()
         self._endpoints, self._localized_endpoints = self._get_endpoints()
         self._envelope = get_sitemap_envelope()
+        self._parts: dict[tuple[str, SitemapKind], list[SitemapPart]] = {}
 
     def render_index(self) -> bytes | None:
-        sitemaps: list[SitemapIndexEntry] = []
-        for kind in SitemapKind:
-            endpoint = (
-                "index.sitemap_group"
-                if kind is SitemapKind.PAGES
-                else "index.sitemap_group_images"
-            )
-            for group in self._get_groups(kind):
-                for part, _ in enumerate(self._iter_parts(group, kind), start=1):
-                    sitemaps.append(
-                        SitemapIndexEntry(
-                            url_for(endpoint, group=group, part=part, _external=True)
-                        )
-                    )
-
-        if not sitemaps:
+        locs = [
+            url_for(_GROUP_ENDPOINTS[kind], group=group, part=part, _external=True)
+            for kind in SitemapKind
+            for group in self._get_groups(kind)
+            for part, _ in enumerate(self._get_parts(group, kind), start=1)
+        ]
+        if not locs:
             return None
-        xml = render_sitemap_index(sitemaps)
-        validate_sitemap_index(xml, len(sitemaps), self._limits)
+        xml = render_sitemap_index(locs)
+        validate_sitemap_index(xml, len(locs), self._limits)
         return xml
 
     def render_part(
@@ -73,23 +67,33 @@ class SitemapService:
         part_number: int,
         kind: SitemapKind,
     ) -> bytes | None:
-        if part_number < 1:
+        parts = self._get_parts(group, kind)
+        if not 1 <= part_number <= len(parts):
             return None
-        for number, part in enumerate(self._iter_parts(group, kind), start=1):
-            if number == part_number:
-                return render_sitemap_part(part, self._envelope)
-        return None
+        return render_sitemap_part(parts[part_number - 1], self._envelope)
 
-    def _iter_parts(
-        self,
-        group: str,
-        kind: SitemapKind,
-    ) -> Iterator[SitemapPart]:
-        bundles = (
-            render_sitemap_bundle(bundle)
-            for bundle in self._get_location_bundles(group, kind)
+    def _get_parts(self, group: str, kind: SitemapKind) -> list[SitemapPart]:
+        if (group, kind) not in self._parts:
+            bundles = (
+                render_sitemap_bundle(urls)
+                for urls in self._get_location_urls(group, kind)
+            )
+            self._parts[(group, kind)] = list(
+                iter_sitemap_parts(bundles, self._envelope, self._limits)
+            )
+        return self._parts[(group, kind)]
+
+    def _filter_routes(self, query: Query, kind: SitemapKind) -> Query:
+        query = query.filter(
+            AppRoute.in_sitemap == true(),
+            AppRoute.endpoint.in_(self._endpoints),
         )
-        return iter_sitemap_parts(bundles, self._envelope, self._limits)
+        if kind is SitemapKind.IMAGES:
+            query = query.filter(
+                AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
+                SitemapLocation.images.any(),
+            )
+        return query
 
     def _get_groups(self, kind: SitemapKind) -> list[str]:
         with conn.begin() as session:
@@ -97,115 +101,102 @@ class SitemapService:
                 session.query(AppRoute.sitemap_group)
                 .select_from(SitemapLocation)
                 .join(SitemapLocation.route)
-                .filter(
-                    AppRoute.in_sitemap == true(),
-                    AppRoute.endpoint.in_(self._endpoints),
-                )
             )
-            if kind is SitemapKind.IMAGES:
-                query = query.filter(
-                    AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
-                    SitemapLocation.images.any(),
-                )
-            rows = query.distinct().order_by(AppRoute.sitemap_group).all()
+            rows = (
+                self._filter_routes(query, kind)
+                .distinct()
+                .order_by(AppRoute.sitemap_group)
+                .all()
+            )
+        return [group for (group,) in rows]
 
-        groups = [group for (group,) in rows]
-        return groups
-
-    def _get_location_bundles(
+    def _get_location_urls(
         self,
         group: str,
         kind: SitemapKind,
-    ) -> list[SitemapLocationBundle]:
+    ) -> list[tuple[SitemapUrl, ...]]:
         with conn.begin() as session:
             query = (
                 session.query(SitemapLocation)
                 .join(SitemapLocation.route)
                 .options(joinedload(SitemapLocation.route))
-                .filter(
-                    AppRoute.in_sitemap == true(),
-                    AppRoute.endpoint.in_(self._endpoints),
-                    AppRoute.sitemap_group == group,
-                )
+                .filter(AppRoute.sitemap_group == group)
             )
-            if kind is SitemapKind.IMAGES:
-                query = query.filter(
-                    AppRoute.sitemap_image_mode == SitemapImageMode.SEPARATE,
-                    SitemapLocation.images.any(),
-                )
-            locations = query.order_by(
-                SitemapLocation.route_id,
-                SitemapLocation.id,
-            ).all()
-
-            image_location_ids = [
-                location.id
-                for location in locations
-                if kind is SitemapKind.IMAGES
-                or location.route.sitemap_image_mode == SitemapImageMode.COMBINED
-            ]
-            images_by_location: defaultdict[int, list[str]] = defaultdict(list)
-            if image_location_ids:
-                images = (
-                    session.query(SitemapImage.location_id, SitemapImage.loc)
-                    .filter(SitemapImage.location_id.in_(image_location_ids))
-                    .order_by(SitemapImage.location_id, SitemapImage.loc)
-                    .all()
-                )
-                for location_id, loc in images:
-                    images_by_location[location_id].append(loc)
-
+            locations = (
+                self._filter_routes(query, kind)
+                .order_by(SitemapLocation.route_id, SitemapLocation.id)
+                .all()
+            )
+            images = self._get_images(session, locations, kind)
             bundles = []
             for location in locations:
-                bundle = self._get_location_bundle(
-                    location,
-                    kind,
-                    tuple(images_by_location[location.id]),
-                )
-                if bundle is not None:
-                    bundles.append(bundle)
+                urls = self._get_urls(location, kind, tuple(images[location.id]))
+                if urls:
+                    bundles.append(urls)
             return bundles
 
-    def _get_location_bundle(
+    @staticmethod
+    def _get_images(
+        session: Session,
+        locations: list[SitemapLocation],
+        kind: SitemapKind,
+    ) -> defaultdict[int, list[str]]:
+        location_ids = [
+            location.id
+            for location in locations
+            if kind is SitemapKind.IMAGES
+            or location.route.sitemap_image_mode == SitemapImageMode.COMBINED
+        ]
+        images: defaultdict[int, list[str]] = defaultdict(list)
+        if not location_ids:
+            return images
+        rows = (
+            session.query(SitemapImage.location_id, SitemapImage.loc)
+            .filter(SitemapImage.location_id.in_(location_ids))
+            .order_by(SitemapImage.location_id, SitemapImage.loc)
+            .all()
+        )
+        for location_id, loc in rows:
+            images[location_id].append(loc)
+        return images
+
+    def _get_urls(
         self,
         location: SitemapLocation,
         kind: SitemapKind,
         image_locs: tuple[str, ...],
-    ) -> SitemapLocationBundle | None:
+    ) -> tuple[SitemapUrl, ...]:
         route = location.route
         is_localized = route.endpoint in self._localized_endpoints
 
         if not is_localized:
-            endpoint_arg_variants: tuple[dict[str, str], ...] = ({},)
+            locale_variants: tuple[dict[str, str], ...] = ({},)
         elif kind is SitemapKind.IMAGES:
-            endpoint_arg_variants = ({"_locale": gen_locale()},)
+            locale_variants = ({"_locale": gen_locale()},)
         elif self._locale_variants:
-            endpoint_arg_variants = tuple(
-                endpoint_args for endpoint_args, _ in self._locale_variants
-            )
+            locale_variants = tuple(args for args, _ in self._locale_variants)
         else:
-            return None
+            return ()
 
         alternates = (
             self._get_alternates(location)
             if kind is SitemapKind.PAGES and is_localized
-            else tuple()
+            else ()
         )
         lastmod = location.lastmod.strftime("%Y-%m-%d")
-        urls = tuple(
+        return tuple(
             SitemapUrl(
                 loc=url_for(
                     route.endpoint,
-                    **(location.endpoint_args | endpoint_arg_variant),
+                    **(location.endpoint_args | locale_args),
                     _external=True,
                 ),
                 lastmod=lastmod,
                 alternates=alternates,
                 image_locs=image_locs,
             )
-            for endpoint_arg_variant in endpoint_arg_variants
+            for locale_args in locale_variants
         )
-        return SitemapLocationBundle(urls)
 
     def _get_alternates(
         self,
@@ -231,12 +222,11 @@ class SitemapService:
             )
         )
         if len({alternate.href for alternate in alternates}) < 2:
-            return tuple()
+            return ()
         return tuple(alternates)
 
     @staticmethod
     def _get_locale_variants() -> tuple[LocaleVariant, ...]:
-        # Every enabled country/language combination must be a routable locale.
         with conn.begin() as session:
             country_codes = (
                 session.query(Country.code)

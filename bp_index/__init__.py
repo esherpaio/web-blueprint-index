@@ -1,2 +1,2 @@
 from .blueprint import index_bp
-from .routes import robots, sitemap
+from .routes import llms, robots, sitemap

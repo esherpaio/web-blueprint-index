@@ -1,0 +1,8 @@
+# {{ config.META_WEBSITE_NAME }}
+{% if summary %}
+> {{ summary }}
+{% endif %}{% for section in sections %}
+## {{ section.title }}
+
+{% for link in section.links %}- [{{ link.title }}]({{ link.url }}){% if link.description %}: {{ link.description }}{% endif %}
+{% endfor %}{% endfor %}

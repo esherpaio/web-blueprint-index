@@ -8,11 +8,6 @@ class SitemapKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class SitemapIndexEntry:
-    loc: str
-
-
-@dataclass(frozen=True)
 class SitemapAlternate:
     hreflang: str
     href: str
@@ -28,11 +23,6 @@ class SitemapUrl:
     @property
     def reference_count(self) -> int:
         return 1 + len(self.alternates) + len(self.image_locs)
-
-
-@dataclass(frozen=True)
-class SitemapLocationBundle:
-    urls: tuple[SitemapUrl, ...]
 
 
 @dataclass(frozen=True)

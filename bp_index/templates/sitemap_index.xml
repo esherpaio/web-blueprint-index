@@ -2,7 +2,7 @@
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     {% for sitemap in sitemaps %}
         <sitemap>
-            <loc>{{ sitemap.loc }}</loc>
+            <loc>{{ sitemap }}</loc>
         </sitemap>
     {% endfor %}
 </sitemapindex>

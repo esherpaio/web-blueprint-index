@@ -8,9 +8,7 @@ from bp_index.sitemap.models import (
     RenderedSitemapBundle,
     SitemapAlternate,
     SitemapEnvelope,
-    SitemapIndexEntry,
     SitemapLimits,
-    SitemapLocationBundle,
     SitemapUrl,
 )
 from bp_index.sitemap.renderer import (
@@ -152,17 +150,17 @@ def test_renders_valid_escaped_xml(app: Flask) -> None:
 
     with app.test_request_context():
         envelope = get_sitemap_envelope()
-        bundle = render_sitemap_bundle(SitemapLocationBundle((url,)))
+        bundle = render_sitemap_bundle((url,))
         part = next(iter_sitemap_parts([bundle], envelope, SitemapLimits()))
         xml = render_sitemap_part(part, envelope)
 
     root = ElementTree.fromstring(xml)
-    assert root.tag == "{https://www.sitemaps.org/schemas/sitemap/0.9}urlset"
+    assert root.tag == "{http://www.sitemaps.org/schemas/sitemap/0.9}urlset"
     assert b"a=1&amp;b=2" in xml
 
 
 def test_renders_and_validates_sitemap_index(app: Flask) -> None:
-    sitemaps = [SitemapIndexEntry("https://example.com/sitemap-pages-1.xml")]
+    sitemaps = ["https://example.com/sitemap-pages-1.xml"]
 
     with app.test_request_context():
         xml = render_sitemap_index(sitemaps)

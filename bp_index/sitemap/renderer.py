@@ -5,10 +5,9 @@ from flask import render_template
 from .models import (
     RenderedSitemapBundle,
     SitemapEnvelope,
-    SitemapIndexEntry,
     SitemapLimits,
-    SitemapLocationBundle,
     SitemapPart,
+    SitemapUrl,
 )
 
 _ENTRY_MARKER = "__SITEMAP_URL_ENTRIES__"
@@ -22,11 +21,11 @@ def get_sitemap_envelope() -> SitemapEnvelope:
     return SitemapEnvelope(prefix, suffix)
 
 
-def render_sitemap_bundle(bundle: SitemapLocationBundle) -> RenderedSitemapBundle:
-    xml = render_template("sitemap_urls.xml", entries=bundle.urls).encode()
+def render_sitemap_bundle(urls: tuple[SitemapUrl, ...]) -> RenderedSitemapBundle:
+    xml = render_template("sitemap_urls.xml", entries=urls).encode()
     return RenderedSitemapBundle(
         xml=xml,
-        url_count=sum(url.reference_count for url in bundle.urls),
+        url_count=sum(url.reference_count for url in urls),
     )
 
 
@@ -71,8 +70,8 @@ def render_sitemap_part(
     return xml
 
 
-def render_sitemap_index(sitemaps: list[SitemapIndexEntry]) -> bytes:
-    return render_template("sitemap_index.xml", sitemaps=sitemaps).encode()
+def render_sitemap_index(locs: list[str]) -> bytes:
+    return render_template("sitemap_index.xml", sitemaps=locs).encode()
 
 
 def validate_sitemap_index(

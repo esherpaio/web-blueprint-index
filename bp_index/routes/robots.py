@@ -15,5 +15,5 @@ def robots() -> Response:
     )
     text = os.linesep.join([x for x in template.splitlines() if x])
     response = make_response(text)
-    response.headers["Content-Type"] = "text/plain"
+    response.headers["Content-Type"] = "text/plain; charset=utf-8"
     return response
