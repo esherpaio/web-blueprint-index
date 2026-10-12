@@ -4,7 +4,7 @@ commit:
 
 .PHONY: venv packages
 venv:
-	python3.12 -m venv .venv
+	python3.14 -m venv .venv
 packages:
 	pip install --upgrade pip
 	pip freeze | grep '^web-' | sed 's/ @.*//' | xargs -r pip uninstall -y
