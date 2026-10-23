@@ -5,6 +5,7 @@ commit:
 .PHONY: venv packages
 venv:
 	python3.14 -m venv .venv
+	.venv/bin/python -m pip install --upgrade --force-reinstall pip
 packages:
 	pip install --upgrade pip
 	pip freeze | grep '^web-' | sed 's/ @.*//' | xargs -r pip uninstall -y
